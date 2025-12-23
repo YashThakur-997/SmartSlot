@@ -11,6 +11,10 @@ app.get('/health',(req,res)=>{
     res.send('Server is healthy');
 })
 
+app.get('/win',(req,res)=>{
+    res.send('winners of  hackcrypt are Team TechNerds');
+})
+
 app.listen(PORT ,()=>{
     console.log(`Server is running on port ${PORT}`);
 })
