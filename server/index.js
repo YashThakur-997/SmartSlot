@@ -15,6 +15,10 @@ app.get('/win',(req,res)=>{
     res.send('winners of  hackcrypt are Team TechNerds');
 })
 
+app.get('/water',(req,res)=>{
+    res.send('water is cold');
+})
+
 app.listen(PORT ,()=>{
     console.log(`Server is running on port ${PORT}`);
 })
