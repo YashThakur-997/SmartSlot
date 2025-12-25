@@ -11,7 +11,7 @@ export function Hero() {
 
     return (
         <section id="home" className="relative w-full h-screen overflow-hidden bg-background text-foreground">
-            <div className="animation-delay-8 animate-fadeIn mt-20 flex flex-col items-center justify-center px-4 text-center md:mt-20 relative z-10">
+            <div className="animation-delay-8 animate-fadeIn mt-20 flex flex-col items-center justify-center px-4 text-center md:mt-8 relative z-10">
                 <div className="z-10 mb-6 mt-10 sm:justify-center md:mb-4 md:mt-20">
                     <div className="relative flex items-center whitespace-nowrap rounded-full border bg-popover px-3 py-1 text-xs leading-6 text-primary/60">
                         <Shapes className="h-5 p-1" /> Introducing SmartSlot.
@@ -69,14 +69,6 @@ export function Hero() {
                         Transform your data into organized, productive tables with the power of AI.
                     </p>
 
-
-                    <div className="flex justify-center gap-2">
-                        <Link to="/start">
-                            <Button variant="default" size="lg">
-                                Start
-                            </Button>
-                        </Link>
-                    </div>
                 </div>
             </div>
             <canvas
