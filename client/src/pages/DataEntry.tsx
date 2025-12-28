@@ -1,9 +1,10 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import html2canvas from "html2canvas";
 import { Link } from "react-router-dom";
 import {
     ArrowLeft, Clock, Calendar, Zap, Coffee,
-    Brain, Sparkles, RotateCcw, Download, Copy,
-    Plus, Trash2, GripVertical, Palette, List, Columns, Save
+    Brain, Sparkles, Download, Copy,
+    Plus, Trash2, GripVertical, Palette, List, Columns, Save, CheckCircle, AlertCircle, X
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -26,6 +27,15 @@ interface Subject {
     targetHours: number;
     color: string;
 }
+
+interface ScheduleSlot {
+    time: string;
+    type: 'study' | 'break';
+    subject?: Subject;
+    duration: number;
+}
+
+
 
 interface ScheduleConfig {
     startTime: string;
@@ -89,6 +99,11 @@ export function DataEntry() {
     const [config, setConfig] = useState<ScheduleConfig>(INITIAL_CONFIG);
     const [hoveredSubjectId, setHoveredSubjectId] = useState<string | null>(null);
     const [currentTime, setCurrentTime] = useState(new Date());
+    const [isGenerated, setIsGenerated] = useState(false);
+    const [schedule, setSchedule] = useState<ScheduleSlot[]>([]);
+    const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+    const scheduleRef = useRef<HTMLDivElement>(null);
+
 
     // --- Effects ---
     useEffect(() => {
@@ -120,6 +135,119 @@ export function DataEntry() {
         setSubjects(prev => prev.filter(s => s.id !== id));
     };
 
+    const generateSchedule = () => {
+        if (subjects.length === 0) return;
+
+        const slots: ScheduleSlot[] = [];
+        let currentMinutes = parseInt(config.startTime.split(':')[0]) * 60 + parseInt(config.startTime.split(':')[1]);
+        const endMinutes = parseInt(config.endTime.split(':')[0]) * 60 + parseInt(config.endTime.split(':')[1]);
+        const slotDur = parseInt(config.slotDuration);
+        const breakDur = parseInt(config.breakDuration);
+        const breakFreq = parseInt(config.breakFrequency);
+
+        let studySlotCount = 0;
+        let subjectIndex = 0;
+
+        // Sort subjects by priority for round-robin (High -> Medium -> Low)
+        const sortedSubjects = [...subjects].sort((a, b) => {
+            const priorityOrder = { High: 3, Medium: 2, Low: 1 };
+            return priorityOrder[b.priority] - priorityOrder[a.priority];
+        });
+
+        while (currentMinutes + slotDur <= endMinutes) {
+            // Check for break
+            if (studySlotCount > 0 && studySlotCount % breakFreq === 0) {
+                const timeString = `${String(Math.floor(currentMinutes / 60)).padStart(2, '0')}:${String(currentMinutes % 60).padStart(2, '0')}`;
+                slots.push({
+                    time: timeString,
+                    type: 'break',
+                    duration: breakDur
+                });
+                currentMinutes += breakDur;
+                studySlotCount = 0;
+                if (currentMinutes + slotDur > endMinutes) break;
+            }
+
+            const timeString = `${String(Math.floor(currentMinutes / 60)).padStart(2, '0')}:${String(currentMinutes % 60).padStart(2, '0')}`;
+
+            // Pick subject
+            const subject = sortedSubjects[subjectIndex % sortedSubjects.length];
+
+            slots.push({
+                time: timeString,
+                type: 'study',
+                subject: subject,
+                duration: slotDur
+            });
+
+            currentMinutes += slotDur;
+            studySlotCount++;
+            subjectIndex++;
+        }
+
+        setSchedule(slots);
+        setIsGenerated(true);
+    };
+
+    // --- Action Handlers ---
+
+    const showToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
+        setToast({ message, type });
+        setTimeout(() => setToast(null), 3000);
+    };
+
+    const handleDownload = async () => {
+        if (!isGenerated || schedule.length === 0) {
+            showToast("Generate a schedule first!", "error");
+            return;
+        }
+
+        if (!scheduleRef.current) return;
+
+        showToast("Generating image...", "info");
+
+        try {
+            const canvas = await html2canvas(scheduleRef.current, {
+                scale: 2, // Higher quality
+                backgroundColor: null, // Transparent background if possible, or inherits
+                useCORS: true // For external images if any
+            });
+
+            const image = canvas.toDataURL("image/png");
+            const link = document.createElement("a");
+            link.href = image;
+            link.download = "smartslot_schedule.png";
+            link.click();
+            showToast("Schedule image saved!");
+        } catch (error) {
+            console.error("Image generation failed:", error);
+            showToast("Failed to generate image.", "error");
+        }
+    };
+
+    const handleCopy = () => {
+        if (!isGenerated || schedule.length === 0) {
+            showToast("Generate a schedule first!", "error");
+            return;
+        }
+        const text = schedule.map(s => {
+            if (s.type === 'break') return `${s.time} - Break (${s.duration}m)`;
+            return `${s.time} - ${s.subject?.name} (${s.subject?.priority})`;
+        }).join('\n');
+
+        navigator.clipboard.writeText(text);
+        showToast("Schedule copied to clipboard!");
+    };
+
+    const handleSave = () => {
+        if (!isGenerated || schedule.length === 0) {
+            showToast("Generate a schedule first!", "error");
+            return;
+        }
+        localStorage.setItem('smartslot_saved_schedule', JSON.stringify({ schedule, config, date: new Date().toISOString() }));
+        showToast("Schedule saved to local storage!");
+    };
+
     // --- Render Helpers ---
     const currentTheme = THEMES[config.theme];
 
@@ -129,12 +257,12 @@ export function DataEntry() {
             {/* --- HEADER --- */}
             <header className="h-16 border-b border-border/40 backdrop-blur-xl sticky top-0 z-50 flex items-center justify-between px-6 bg-background/50">
                 <div className="flex items-center gap-3">
-                    <div className="relative w-8 h-8 flex items-center justify-center bg-primary rounded-lg text-primary-foreground shadow-lg animate-pulse-slow">
-                        <Sparkles className="w-5 h-5 animate-spin-slow" />
+                    <div className="relative w-10 h-10 flex items-center justify-center bg-primary/10 rounded-lg overflow-hidden shadow-sm">
+                        <img src="/logo.png" alt="SmartSlot Logo" className="w-full h-full object-cover" />
                     </div>
                     <div>
-                        <h1 className="text-lg font-bold tracking-tight">AI-Powered Productivity</h1>
-                        <p className="text-[10px] text-muted-foreground uppercase tracking-widest">Generator v2.0</p>
+                        <h1 className="text-lg font-bold tracking-tight">SmartSlot</h1>
+                        <p className="text-[10px] text-muted-foreground uppercase tracking-widest">Scheduling Software</p>
                     </div>
                 </div>
                 <div className="flex items-center gap-4">
@@ -432,8 +560,12 @@ export function DataEntry() {
 
                     {/* Action Buttons */}
                     <div className="pt-6 pb-2 space-y-3 mt-4">
-                        <Button size="lg" className="w-full shadow-lg hover:shadow-primary/20 transition-all font-semibold text-md animate-bounce-subtle">
-                            <Sparkles className="w-4 h-4 mr-2" /> Generate Schedule
+                        <Button
+                            size="lg"
+                            className="w-full shadow-lg hover:shadow-primary/20 transition-all font-semibold text-md animate-bounce-subtle"
+                            onClick={generateSchedule}
+                        >
+                            Generate Schedule
                         </Button>
                         <Button variant="outline" className="w-full text-xs text-muted-foreground h-8">
                             Reset All Inputs
@@ -463,16 +595,16 @@ export function DataEntry() {
                         </div>
 
                         <div className="bg-background/60 backdrop-blur-md border rounded-lg p-1 flex shadow-sm gap-1">
-                            <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground"><Download className="w-4 h-4" /></Button>
-                            <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground"><Copy className="w-4 h-4" /></Button>
-                            <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground"><Save className="w-4 h-4" /></Button>
+                            <Button variant="ghost" size="icon" onClick={handleDownload} className="h-8 w-8 text-muted-foreground hover:text-foreground"><Download className="w-4 h-4" /></Button>
+                            <Button variant="ghost" size="icon" onClick={handleCopy} className="h-8 w-8 text-muted-foreground hover:text-foreground"><Copy className="w-4 h-4" /></Button>
+                            <Button variant="ghost" size="icon" onClick={handleSave} className="h-8 w-8 text-muted-foreground hover:text-foreground"><Save className="w-4 h-4" /></Button>
                         </div>
                     </div>
 
                     {/* Preview Content Area */}
                     <div className="flex-1 p-8 overflow-y-auto flex items-center justify-center">
 
-                        <div className={cn(
+                        <div ref={scheduleRef} className={cn(
                             "w-full max-w-2xl bg-background rounded-xl shadow-2xl border transition-all duration-500 min-h-[600px] relative overflow-hidden",
                             config.uiStyle === 'glass' ? "backdrop-blur-xl bg-background/70" : ""
                         )}>
@@ -492,31 +624,34 @@ export function DataEntry() {
 
                             {/* Mock Content */}
                             <div className="p-6 space-y-4">
-                                {/* Time slots simulation */}
-                                {['09:00', '10:00', '11:00', '12:00', '01:00', '02:00'].map((time, i) => {
-                                    // Mock assigning subjects to slots
-                                    const mockSubject = subjects[i % subjects.length];
-                                    const isBreak = i === 2; // Fixed break index for preview
-
-                                    return (
-                                        <div key={time} className="flex gap-4 group">
-                                            <div className="w-16 text-right text-xs text-muted-foreground font-mono pt-2">{time}</div>
+                                {!isGenerated ? (
+                                    <div className="flex flex-col items-center justify-center h-64 text-muted-foreground space-y-4">
+                                        <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center">
+                                            <img src="/logo.png" alt="SmartSlot Logo" className="w-full h-full object-cover" />
+                                        </div>
+                                        <p className="text-sm font-medium">Click "Generate Schedule" to view your plan</p>
+                                    </div>
+                                ) : (
+                                    /* Generated Schedule */
+                                    schedule.map((slot, i) => (
+                                        <div key={`${slot.time}-${i}`} className="flex gap-4 group animate-in slide-in-from-bottom-2 duration-500" style={{ animationDelay: `${i * 50}ms` }}>
+                                            <div className="w-16 text-right text-xs text-muted-foreground font-mono pt-2">{slot.time}</div>
                                             <div className="relative flex-1">
-                                                {isBreak ? (
+                                                {slot.type === 'break' ? (
                                                     <div className="h-10 w-full border-dashed border-2 border-muted-foreground/20 rounded-lg flex items-center justify-center text-xs text-muted-foreground">
-                                                        <Coffee className="w-3 h-3 mr-2" /> Short Break
+                                                        <Coffee className="w-3 h-3 mr-2" /> Break ({slot.duration} min)
                                                     </div>
                                                 ) : (
                                                     <div
                                                         className={cn(
                                                             "h-24 w-full rounded-xl p-3 border transition-all hover:scale-[1.01] hover:shadow-lg relative overflow-hidden",
-                                                            hoveredSubjectId === mockSubject?.id ? "ring-2 ring-primary ring-offset-2" : ""
+                                                            hoveredSubjectId === slot.subject?.id ? "ring-2 ring-primary ring-offset-2" : ""
                                                         )}
                                                         style={{
-                                                            backgroundColor: `${mockSubject?.color} 15`,
-                                                            borderColor: `${mockSubject?.color} 40`,
+                                                            backgroundColor: `${slot.subject?.color} 15`,
+                                                            borderColor: `${slot.subject?.color} 40`,
                                                             borderLeftWidth: '4px',
-                                                            borderLeftColor: mockSubject?.color
+                                                            borderLeftColor: slot.subject?.color
                                                         }}
                                                     >
                                                         {/* Slot Decoration */}
@@ -526,48 +661,51 @@ export function DataEntry() {
 
                                                         <div className="flex justify-between items-start relative z-10">
                                                             <div>
-                                                                <h4 className="font-semibold text-sm" style={{ color: mockSubject?.color }}>
-                                                                    {mockSubject?.name || 'Untitled Subject'}
+                                                                <h4 className="font-semibold text-sm" style={{ color: slot.subject?.color }}>
+                                                                    {slot.subject?.name}
                                                                 </h4>
                                                                 <div className="flex items-center gap-2 mt-1">
                                                                     <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full border",
-                                                                        mockSubject?.priority === 'High' ? "bg-red-100 text-red-700 border-red-200" :
-                                                                            mockSubject?.priority === 'Medium' ? "bg-amber-100 text-amber-700 border-amber-200" :
+                                                                        slot.subject?.priority === 'High' ? "bg-red-100 text-red-700 border-red-200" :
+                                                                            slot.subject?.priority === 'Medium' ? "bg-amber-100 text-amber-700 border-amber-200" :
                                                                                 "bg-emerald-100 text-emerald-700 border-emerald-200"
                                                                     )}>
-                                                                        {mockSubject?.priority}
+                                                                        {slot.subject?.priority}
                                                                     </span>
                                                                     <span className="text-[10px] text-muted-foreground">
                                                                         {config.focusMode} mode
                                                                     </span>
                                                                 </div>
                                                             </div>
-                                                            {mockSubject?.targetHours > 1 && (
-                                                                <div className="bg-background/50 rounded-full p-1">
-                                                                    <RotateCcw className="w-3 h-3 text-muted-foreground" />
-                                                                </div>
-                                                            )}
+                                                            {/* Duration badge if needed */}
                                                         </div>
                                                     </div>
                                                 )}
                                             </div>
                                         </div>
-                                    )
-                                })}
+                                    ))
+                                )}
                             </div>
-
-                            {/* Floating Action Button (FAB) Simulation for effect */}
-                            <div className="absolute bottom-6 right-6">
-                                <div className="w-12 h-12 bg-primary rounded-full shadow-xl shadow-primary/30 flex items-center justify-center animate-bounce-slow text-primary-foreground">
-                                    <Zap className="w-6 h-6" />
-                                </div>
-                            </div>
-
                         </div>
                     </div>
                 </div>
 
             </main>
+
+            {/* --- TOAST NOTIFICATION --- */}
+            {toast && (
+                <div className={cn(
+                    "fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-3 px-4 py-3 rounded-xl shadow-2xl border animate-in slide-in-from-bottom-5 fade-in duration-300",
+                    toast.type === 'error' ? "bg-destructive text-destructive-foreground border-destructive/50" :
+                        "bg-foreground text-background border-border"
+                )}>
+                    {toast.type === 'success' && <CheckCircle className="w-5 h-5 text-green-400" />}
+                    {toast.type === 'error' && <AlertCircle className="w-5 h-5" />}
+                    <span className="text-sm font-medium">{toast.message}</span>
+                    <button onClick={() => setToast(null)} className="ml-2 opacity-70 hover:opacity-100"><X className="w-4 h-4" /></button>
+                </div>
+            )}
+
         </div>
     );
 }
