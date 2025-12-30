@@ -3,9 +3,11 @@ import html2canvas from "html2canvas";
 import { Link } from "react-router-dom";
 import {
     ArrowLeft, Clock, Calendar, Zap, Coffee,
-    Brain, Sparkles, Download, Copy,
-    Plus, Trash2, GripVertical, Palette, List, Columns, Save, CheckCircle, AlertCircle, X
+    Brain, Download, Copy,
+    Plus, Trash2, GripVertical, Palette, List, Columns, Save, CheckCircle, AlertCircle, X,
+    Shuffle, RefreshCw
 } from "lucide-react";
+import { generateSmartSchedule, SubjectInput } from "@/lib/scheduler";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -26,25 +28,28 @@ interface Subject {
     priority: Priority;
     targetHours: number;
     color: string;
+    difficulty?: "Easy" | "Medium" | "Hard";
+    notes?: string;
 }
 
 interface ScheduleSlot {
-    time: string;
-    type: 'study' | 'break';
+    time: string; // HH:MM
+    type: 'study' | 'break' | 'empty';
     subject?: Subject;
     duration: number;
+    day?: string; // Newly added for Table View
 }
-
-
 
 interface ScheduleConfig {
     startTime: string;
     endTime: string;
     slotDuration: string;
     studyDays: string[];
-    sameScheduleEveryDay: boolean;
+    sameScheduleEveryDay: boolean; // Note: UI toggle exists, but new logic manages per-day arrays directly.
+    randomize: boolean;
 
     // Smart Features
+    autoBalance: boolean;
     breakDuration: string;
     breakFrequency: string;
     breakType: "fixed" | "auto" | "random";
@@ -70,8 +75,8 @@ const THEMES: Record<ThemeType, { bg: string, accent: string, text: string }> = 
 };
 
 const DEFAULT_SUBJECTS: Subject[] = [
-    { id: "1", name: "Algorithm Design", priority: "High", targetHours: 2, color: "#3b82f6" },
-    { id: "2", name: "System Architecture", priority: "Medium", targetHours: 1.5, color: "#a855f7" },
+    { id: "1", name: "Algorithm Design", priority: "High", targetHours: 5, color: "#3b82f6", difficulty: "Hard" },
+    { id: "2", name: "System Architecture", priority: "Medium", targetHours: 3, color: "#a855f7", difficulty: "Medium" },
 ];
 
 const INITIAL_CONFIG: ScheduleConfig = {
@@ -80,9 +85,11 @@ const INITIAL_CONFIG: ScheduleConfig = {
     slotDuration: "60",
     studyDays: ["Mon", "Tue", "Wed", "Thu", "Fri"],
     sameScheduleEveryDay: true,
+    randomize: false,
     breakDuration: "15",
     breakFrequency: "2",
     breakType: "fixed",
+    autoBalance: true,
     focusMode: "deep",
     energyPeak: "morning",
     mood: "calm",
@@ -100,7 +107,11 @@ export function DataEntry() {
     const [hoveredSubjectId, setHoveredSubjectId] = useState<string | null>(null);
     const [currentTime, setCurrentTime] = useState(new Date());
     const [isGenerated, setIsGenerated] = useState(false);
-    const [schedule, setSchedule] = useState<ScheduleSlot[]>([]);
+
+    // We store the schedule as a Map of Day -> Slots for easier table rendering
+    const [scheduleMap, setScheduleMap] = useState<Record<string, ScheduleSlot[]>>({});
+    const [scheduleWarnings, setScheduleWarnings] = useState<string[]>([]);
+
     const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
     const scheduleRef = useRef<HTMLDivElement>(null);
 
@@ -122,9 +133,27 @@ export function DataEntry() {
             name: "",
             priority: "Medium",
             targetHours: 1,
-            color: "#10b981",
+            color: `hsl(${Math.random() * 360}, 70%, 50%)`,
+            difficulty: "Medium",
+            notes: ""
         };
         setSubjects([...subjects, newSubject]);
+    };
+
+    const randomizeColors = () => {
+        setSubjects(prev => prev.map(s => ({
+            ...s,
+            color: `hsl(${Math.random() * 360}, 70%, 50%)`
+        })));
+    };
+
+    const resetInputs = () => {
+        if (confirm("Are you sure you want to reset all inputs?")) {
+            setSubjects([]);
+            setConfig(INITIAL_CONFIG);
+            setIsGenerated(false);
+            setScheduleMap({});
+        }
     };
 
     const updateSubject = (id: string, key: keyof Subject, value: any) => {
@@ -136,58 +165,67 @@ export function DataEntry() {
     };
 
     const generateSchedule = () => {
-        if (subjects.length === 0) return;
-
-        const slots: ScheduleSlot[] = [];
-        let currentMinutes = parseInt(config.startTime.split(':')[0]) * 60 + parseInt(config.startTime.split(':')[1]);
-        const endMinutes = parseInt(config.endTime.split(':')[0]) * 60 + parseInt(config.endTime.split(':')[1]);
-        const slotDur = parseInt(config.slotDuration);
-        const breakDur = parseInt(config.breakDuration);
-        const breakFreq = parseInt(config.breakFrequency);
-
-        let studySlotCount = 0;
-        let subjectIndex = 0;
-
-        // Sort subjects by priority for round-robin (High -> Medium -> Low)
-        const sortedSubjects = [...subjects].sort((a, b) => {
-            const priorityOrder = { High: 3, Medium: 2, Low: 1 };
-            return priorityOrder[b.priority] - priorityOrder[a.priority];
-        });
-
-        while (currentMinutes + slotDur <= endMinutes) {
-            // Check for break
-            if (studySlotCount > 0 && studySlotCount % breakFreq === 0) {
-                const timeString = `${String(Math.floor(currentMinutes / 60)).padStart(2, '0')}:${String(currentMinutes % 60).padStart(2, '0')}`;
-                slots.push({
-                    time: timeString,
-                    type: 'break',
-                    duration: breakDur
-                });
-                currentMinutes += breakDur;
-                studySlotCount = 0;
-                if (currentMinutes + slotDur > endMinutes) break;
-            }
-
-            const timeString = `${String(Math.floor(currentMinutes / 60)).padStart(2, '0')}:${String(currentMinutes % 60).padStart(2, '0')}`;
-
-            // Pick subject
-            const subject = sortedSubjects[subjectIndex % sortedSubjects.length];
-
-            slots.push({
-                time: timeString,
-                type: 'study',
-                subject: subject,
-                duration: slotDur
-            });
-
-            currentMinutes += slotDur;
-            studySlotCount++;
-            subjectIndex++;
+        if (subjects.length === 0) {
+            showToast("Please add at least one subject", "error");
+            return;
         }
 
-        setSchedule(slots);
+        // Convert UI Subject to Logic SubjectInput
+        // TREAT INPUT "Target Hours" AS "HOURS PER DAY" to match user expectations of a daily routine builder.
+        // Therefore, Total Minutes = Input * 60 * Days.
+        const logicSubjects: SubjectInput[] = subjects.map(s => ({
+            ...s,
+            targetMinutes: s.targetHours * 60 * config.studyDays.length
+        }));
+
+        const result = generateSmartSchedule(logicSubjects, {
+            startTime: config.startTime,
+            endTime: config.endTime,
+            slotDuration: parseInt(config.slotDuration),
+            studyDays: config.studyDays,
+            autoBalance: config.autoBalance,
+            sameScheduleEveryDay: config.sameScheduleEveryDay,
+            randomize: config.randomize,
+            breakStrategy: {
+                frequency: parseInt(config.breakFrequency), // Not fully used in logic yet but passed
+                duration: parseInt(config.breakDuration)
+            }
+        });
+
+        if (result.warnings.length > 0) {
+            // result.warnings.forEach(w => showToast(w, "info"));
+            setScheduleWarnings(result.warnings);
+        } else {
+            setScheduleWarnings([]);
+        }
+
+        // Convert Logic Slots back to UI Slots structure for rendering
+        const newScheduleMap: Record<string, ScheduleSlot[]> = {};
+
+        Object.keys(result.schedule).forEach(day => {
+            newScheduleMap[day] = result.schedule[day].map(slot => ({
+                time: slot.startTime,
+                type: slot.type as 'study' | 'break' | 'empty',
+                duration: parseInt(config.slotDuration),
+                day: day,
+                subject: slot.subject ? subjects.find(s => s.id === slot.subject!.id) : undefined
+            }));
+        });
+
+        setScheduleMap(newScheduleMap);
         setIsGenerated(true);
+        showToast("Schedule Generated Successfully!");
     };
+
+    // Auto-Regenerate when inputs change if already generated
+    useEffect(() => {
+        if (isGenerated) {
+            const timer = setTimeout(() => {
+                generateSchedule();
+            }, 500); // Debounce
+            return () => clearTimeout(timer);
+        }
+    }, [subjects, config]); // Re-run when these change
 
     // --- Action Handlers ---
 
@@ -197,7 +235,7 @@ export function DataEntry() {
     };
 
     const handleDownload = async () => {
-        if (!isGenerated || schedule.length === 0) {
+        if (!isGenerated) {
             showToast("Generate a schedule first!", "error");
             return;
         }
@@ -209,9 +247,9 @@ export function DataEntry() {
         try {
             const canvas = await html2canvas(scheduleRef.current, {
                 scale: 2, // Higher quality
-                backgroundColor: null, // Transparent background if possible, or inherits
-                useCORS: true // For external images if any
-            });
+                backgroundColor: null,
+                useCORS: true
+            } as any);
 
             const image = canvas.toDataURL("image/png");
             const link = document.createElement("a");
@@ -226,25 +264,29 @@ export function DataEntry() {
     };
 
     const handleCopy = () => {
-        if (!isGenerated || schedule.length === 0) {
+        if (!isGenerated) {
             showToast("Generate a schedule first!", "error");
             return;
         }
-        const text = schedule.map(s => {
-            if (s.type === 'break') return `${s.time} - Break (${s.duration}m)`;
-            return `${s.time} - ${s.subject?.name} (${s.subject?.priority})`;
-        }).join('\n');
+        // Simple text representation for now
+        const text = Object.entries(scheduleMap).map(([day, slots]) => {
+            return `--- ${day} ---\n` + slots.map(s => {
+                if (s.type === 'break') return `${s.time} - Break`;
+                if (s.type === 'empty') return `${s.time} - Free`;
+                return `${s.time} - ${s.subject?.name}`;
+            }).join('\n');
+        }).join('\n\n');
 
         navigator.clipboard.writeText(text);
         showToast("Schedule copied to clipboard!");
     };
 
     const handleSave = () => {
-        if (!isGenerated || schedule.length === 0) {
+        if (!isGenerated) {
             showToast("Generate a schedule first!", "error");
             return;
         }
-        localStorage.setItem('smartslot_saved_schedule', JSON.stringify({ schedule, config, date: new Date().toISOString() }));
+        localStorage.setItem('smartslot_saved_schedule', JSON.stringify({ schedule: scheduleMap, config, date: new Date().toISOString() }));
         showToast("Schedule saved to local storage!");
     };
 
@@ -359,6 +401,20 @@ export function DataEntry() {
                                     onCheckedChange={v => handleConfigChange('sameScheduleEveryDay', v)}
                                 />
                             </div>
+                            <div className="flex items-center justify-between pt-2">
+                                <Label className="text-xs">Shuffle Arrangement?</Label>
+                                <Switch
+                                    checked={config.randomize}
+                                    onCheckedChange={v => handleConfigChange('randomize', v)}
+                                />
+                            </div>
+                            <div className="flex items-center justify-between pt-2">
+                                <Label className="text-xs">Auto-Balance Hours?</Label>
+                                <Switch
+                                    checked={config.autoBalance}
+                                    onCheckedChange={v => handleConfigChange('autoBalance', v)}
+                                />
+                            </div>
                         </div>
                     </section>
 
@@ -443,6 +499,9 @@ export function DataEntry() {
                             <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
                                 <List className="w-4 h-4" /> Subjects
                             </h2>
+                            <Button size="sm" variant="ghost" onClick={randomizeColors} className="h-6 text-xs hover:bg-primary/10 hover:text-primary mr-1">
+                                <Shuffle className="w-3 h-3 mr-1" /> Random Colors
+                            </Button>
                             <Button size="sm" variant="ghost" onClick={addSubject} className="h-6 text-xs hover:bg-primary/10 hover:text-primary">
                                 <Plus className="w-3 h-3 mr-1" /> Add New
                             </Button>
@@ -495,7 +554,7 @@ export function DataEntry() {
                                                         className="h-full border-0 p-0 text-xs w-full text-center focus-visible:ring-0"
                                                         min={1} max={10}
                                                     />
-                                                    <span className="text-[10px] text-muted-foreground ml-1">h</span>
+                                                    <span className="text-[10px] text-muted-foreground ml-1">h/day</span>
                                                 </div>
 
                                                 <div className="h-7 w-7 rounded-md overflow-hidden border border-border relative group/color cursor-pointer">
@@ -506,6 +565,23 @@ export function DataEntry() {
                                                         className="absolute inset-0 w-[150%] h-[150%] -top-1/4 -left-1/4 cursor-pointer p-0 border-0"
                                                     />
                                                 </div>
+                                            </div>
+
+                                            <div className="grid grid-cols-2 gap-2">
+                                                <Select value={sub.difficulty} onValueChange={v => updateSubject(sub.id, 'difficulty', v)}>
+                                                    <SelectTrigger className="h-6 text-[10px] bg-background/50"><SelectValue placeholder="Difficulty" /></SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="Easy">Easy</SelectItem>
+                                                        <SelectItem value="Medium">Medium</SelectItem>
+                                                        <SelectItem value="Hard">Hard</SelectItem>
+                                                    </SelectContent>
+                                                </Select>
+                                                <Input
+                                                    value={sub.notes || ""}
+                                                    onChange={e => updateSubject(sub.id, 'notes', e.target.value)}
+                                                    placeholder="Notes..."
+                                                    className="h-6 text-[10px] bg-background/50"
+                                                />
                                             </div>
                                         </div>
 
@@ -567,8 +643,8 @@ export function DataEntry() {
                         >
                             Generate Schedule
                         </Button>
-                        <Button variant="outline" className="w-full text-xs text-muted-foreground h-8">
-                            Reset All Inputs
+                        <Button variant="outline" className="w-full text-xs text-muted-foreground h-8" onClick={resetInputs}>
+                            <RefreshCw className="w-3 h-3 mr-2" /> Reset All Inputs
                         </Button>
                     </div>
 
@@ -605,7 +681,7 @@ export function DataEntry() {
                     <div className="flex-1 p-8 overflow-y-auto flex items-center justify-center">
 
                         <div ref={scheduleRef} className={cn(
-                            "w-full max-w-2xl bg-background rounded-xl shadow-2xl border transition-all duration-500 min-h-[600px] relative overflow-hidden",
+                            "w-full max-w-5xl bg-background rounded-xl shadow-2xl border transition-all duration-500 min-h-[600px] relative overflow-hidden",
                             config.uiStyle === 'glass' ? "backdrop-blur-xl bg-background/70" : ""
                         )}>
 
@@ -622,70 +698,164 @@ export function DataEntry() {
                                 </div>
                             </div>
 
-                            {/* Mock Content */}
-                            <div className="p-6 space-y-4">
-                                {!isGenerated ? (
-                                    <div className="flex flex-col items-center justify-center h-64 text-muted-foreground space-y-4">
-                                        <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center">
-                                            <img src="/logo.png" alt="SmartSlot Logo" className="w-full h-full object-cover" />
-                                        </div>
-                                        <p className="text-sm font-medium">Click "Generate Schedule" to view your plan</p>
+                            {/* Warning Message */}
+                            {scheduleWarnings.length > 0 && (
+                                <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/30 text-amber-600 rounded-lg text-xs flex items-center gap-2">
+                                    <AlertCircle className="w-4 h-4" />
+                                    <span>{scheduleWarnings[0]}</span>
+                                </div>
+                            )}
+
+                            {/* Render Table or Timeline */}
+                            {!isGenerated ? (
+                                <div className="flex flex-col items-center justify-center h-64 text-muted-foreground space-y-4">
+                                    <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center">
+                                        <img src="/logo.png" alt="SmartSlot Logo" className="w-full h-full object-cover" />
+                                    </div>
+                                    <p className="text-sm font-medium">Click "Generate Schedule" to view your plan</p>
+                                </div>
+                            ) : (
+                                activeTab === 'timeline' ? (
+                                    /* TIMELINE VIEW (Simplified to show just first day or aggregated list?) 
+                                       For now, let's show all days sequentially.
+                                    */
+                                    <div className="space-y-8">
+                                        {Object.entries(scheduleMap).map(([day, slots]) => (
+                                            <div key={day}>
+                                                <h4 className="text-sm font-bold uppercase tracking-wider text-muted-foreground mb-3">{day}</h4>
+                                                <div className="space-y-2">
+                                                    {slots.map((slot, i) => (
+                                                        <div key={`${day}-${i}`} className="flex gap-4 group">
+                                                            <div className="w-16 text-right text-xs text-muted-foreground font-mono pt-2">{slot.time}</div>
+                                                            <div className="relative flex-1">
+                                                                {slot.type === 'break' ? (
+                                                                    <div className="h-6 w-full border-dashed border border-muted-foreground/20 rounded flex items-center justify-center text-[10px] text-muted-foreground">
+                                                                        Break
+                                                                    </div>
+                                                                ) : slot.type === 'empty' ? (
+                                                                    <div className="h-8 w-full border border-dashed border-border/50 rounded flex items-center justify-center text-[10px] text-muted-foreground/30">
+                                                                        Free
+                                                                    </div>
+                                                                ) : (
+                                                                    <div
+                                                                        className={cn(
+                                                                            "h-20 w-full rounded-xl p-3 border transition-all hover:scale-[1.01] hover:shadow-lg relative overflow-hidden",
+                                                                            hoveredSubjectId === slot.subject?.id ? "ring-2 ring-primary ring-offset-2" : ""
+                                                                        )}
+                                                                        style={{
+                                                                            backgroundColor: `${slot.subject?.color}15`,
+                                                                            borderColor: `${slot.subject?.color}40`,
+                                                                            borderLeftWidth: '4px',
+                                                                            borderLeftColor: slot.subject?.color
+                                                                        }}
+                                                                        onMouseEnter={() => setHoveredSubjectId(slot.subject?.id || null)}
+                                                                        onMouseLeave={() => setHoveredSubjectId(null)}
+                                                                    >
+                                                                        <div className="flex justify-between items-start">
+                                                                            <div>
+                                                                                <h4 className="font-semibold text-sm" style={{ color: slot.subject?.color }}>
+                                                                                    {slot.subject?.name}
+                                                                                </h4>
+                                                                                <div className="flex items-center gap-2 mt-1">
+                                                                                    <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full border bg-background/50")}>
+                                                                                        {slot.subject?.priority}
+                                                                                    </span>
+                                                                                    {slot.subject?.difficulty && (
+                                                                                        <span className="text-[10px] text-muted-foreground border px-1 rounded bg-background/50">
+                                                                                            {slot.subject.difficulty}
+                                                                                        </span>
+                                                                                    )}
+                                                                                </div>
+                                                                            </div>
+                                                                        </div>
+                                                                        {/* Tooltipish info */}
+                                                                        {slot.subject?.notes && (
+                                                                            <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity bg-background/90 text-[10px] p-1 rounded border shadow-sm max-w-[150px] truncate">
+                                                                                {slot.subject.notes}
+                                                                            </div>
+                                                                        )}
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        ))}
                                     </div>
                                 ) : (
-                                    /* Generated Schedule */
-                                    schedule.map((slot, i) => (
-                                        <div key={`${slot.time}-${i}`} className="flex gap-4 group animate-in slide-in-from-bottom-2 duration-500" style={{ animationDelay: `${i * 50}ms` }}>
-                                            <div className="w-16 text-right text-xs text-muted-foreground font-mono pt-2">{slot.time}</div>
-                                            <div className="relative flex-1">
-                                                {slot.type === 'break' ? (
-                                                    <div className="h-10 w-full border-dashed border-2 border-muted-foreground/20 rounded-lg flex items-center justify-center text-xs text-muted-foreground">
-                                                        <Coffee className="w-3 h-3 mr-2" /> Break ({slot.duration} min)
-                                                    </div>
-                                                ) : (
-                                                    <div
-                                                        className={cn(
-                                                            "h-24 w-full rounded-xl p-3 border transition-all hover:scale-[1.01] hover:shadow-lg relative overflow-hidden",
-                                                            hoveredSubjectId === slot.subject?.id ? "ring-2 ring-primary ring-offset-2" : ""
-                                                        )}
-                                                        style={{
-                                                            backgroundColor: `${slot.subject?.color} 15`,
-                                                            borderColor: `${slot.subject?.color} 40`,
-                                                            borderLeftWidth: '4px',
-                                                            borderLeftColor: slot.subject?.color
-                                                        }}
-                                                    >
-                                                        {/* Slot Decoration */}
-                                                        {config.slotDecoration === 'striped' && (
-                                                            <div className="absolute inset-0 opacity-[0.03] bg-[linear-gradient(45deg,currentColor_25%,transparent_25%,transparent_50%,currentColor_50%,currentColor_75%,transparent_75%,transparent)] bg-[length:10px_10px]" />
-                                                        )}
+                                    /* TABLE VIEW */
+                                    <div className="min-w-full overflow-x-auto">
+                                        <div className="grid gap-2"
+                                            style={{
+                                                gridTemplateColumns: `60px repeat(${Object.keys(scheduleMap).length}, minmax(140px, 1fr))`
+                                            }}
+                                        >
+                                            {/* Header Row */}
+                                            <div className="sticky top-0 z-10 bg-background/90 backdrop-blur p-2 text-xs font-bold text-center border-b">Time</div>
+                                            {Object.keys(scheduleMap).map(day => (
+                                                <div key={day} className="sticky top-0 z-10 bg-background/90 backdrop-blur p-2 text-xs font-bold text-center border-b border-l uppercase tracking-wider">
+                                                    {day}
+                                                </div>
+                                            ))}
 
-                                                        <div className="flex justify-between items-start relative z-10">
-                                                            <div>
-                                                                <h4 className="font-semibold text-sm" style={{ color: slot.subject?.color }}>
-                                                                    {slot.subject?.name}
-                                                                </h4>
-                                                                <div className="flex items-center gap-2 mt-1">
-                                                                    <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full border",
-                                                                        slot.subject?.priority === 'High' ? "bg-red-100 text-red-700 border-red-200" :
-                                                                            slot.subject?.priority === 'Medium' ? "bg-amber-100 text-amber-700 border-amber-200" :
-                                                                                "bg-emerald-100 text-emerald-700 border-emerald-200"
-                                                                    )}>
-                                                                        {slot.subject?.priority}
-                                                                    </span>
-                                                                    <span className="text-[10px] text-muted-foreground">
-                                                                        {config.focusMode} mode
-                                                                    </span>
-                                                                </div>
-                                                            </div>
-                                                            {/* Duration badge if needed */}
-                                                        </div>
+                                            {/* Rows */}
+                                            {scheduleMap[Object.keys(scheduleMap)[0]]?.map((_, slotIndex) => (
+                                                <>
+                                                    {/* Time Label */}
+                                                    <div className="text-[10px] text-muted-foreground font-mono p-2 text-right border-r flex items-center justify-end">
+                                                        {scheduleMap[Object.keys(scheduleMap)[0]][slotIndex].time}
                                                     </div>
-                                                )}
-                                            </div>
+
+                                                    {/* Cells */}
+                                                    {Object.keys(scheduleMap).map(day => {
+                                                        const slot = scheduleMap[day][slotIndex];
+                                                        const isBreak = slot.type === 'break';
+                                                        return (
+                                                            <div key={`${day}-${slotIndex}`} className={cn("p-1", isBreak ? "min-h-[30px]" : "min-h-[60px]")}>
+                                                                {slot.type === 'study' ? (
+                                                                    <div
+                                                                        className={cn(
+                                                                            "h-full w-full rounded-md p-2 text-xs font-medium border shadow-sm transition-all hover:scale-105 hover:z-10 relative group cursor-default",
+                                                                            hoveredSubjectId === slot.subject?.id ? "ring-2 ring-primary" : ""
+                                                                        )}
+                                                                        style={{
+                                                                            backgroundColor: slot.subject?.color,
+                                                                            color: '#fff',
+                                                                            textShadow: '0 1px 2px rgba(0,0,0,0.3)'
+                                                                        }}
+                                                                        onMouseEnter={() => setHoveredSubjectId(slot.subject?.id || null)}
+                                                                        onMouseLeave={() => setHoveredSubjectId(null)}
+                                                                    >
+                                                                        <div className="font-bold truncate">{slot.subject?.name}</div>
+                                                                        <div className="text-[10px] opacity-90">{slot.subject?.priority}</div>
+
+                                                                        {/* Hover Tooltip */}
+                                                                        <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-48 p-2 bg-popover text-popover-foreground text-xs rounded-md shadow-lg border opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50">
+                                                                            <div className="font-bold mb-1">{slot.subject?.name}</div>
+                                                                            <div className="grid grid-cols-2 gap-1 text-[10px] text-muted-foreground">
+                                                                                <span>Priority:</span> <span className="text-foreground">{slot.subject?.priority}</span>
+                                                                                <span>Difficulty:</span> <span className="text-foreground">{slot.subject?.difficulty || 'N/A'}</span>
+                                                                                <span>Notes:</span> <span className="text-foreground truncate">{slot.subject?.notes || '-'}</span>
+                                                                            </div>
+                                                                        </div>
+                                                                    </div>
+                                                                ) : slot.type === 'break' ? (
+                                                                    <div className="h-full w-full rounded-md border border-dashed flex items-center justify-center text-[10px] text-muted-foreground bg-muted/20">
+                                                                        Break
+                                                                    </div>
+                                                                ) : (
+                                                                    <div className="h-full w-full rounded-md bg-muted/5 border-none" />
+                                                                )}
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </>
+                                            ))}
                                         </div>
-                                    ))
-                                )}
-                            </div>
+                                    </div>
+                                )
+                            )}
                         </div>
                     </div>
                 </div>
